@@ -4,6 +4,7 @@ module Interpreter where
 
 import           Control.Monad.State
 import           Control.Monad.Except
+import           Control.Monad                  ( void )
 import           Data.Maybe
 import           System.IO
 import qualified Data.Map                      as Map
@@ -18,20 +19,20 @@ import           ErrM
 type Result = IM ()
 
 failure :: Show a => a -> Result
-failure x = throwError ("Undefined case\n" ++ show x)
+failure x = runtimeError ("Undefined case\n" ++ show x)
 
 interpret :: Show a => Program a -> IO ()
 interpret p = do
   (ret, s) <- runStateT (runExceptT $ transProgram p) initialState
   case ret of
-    Left  err -> hPutStrLn stderr err
-    Right _   -> do
+    Left (ErrorExcept err) -> hPutStrLn stderr err
+    _                      -> do
       (ret1, _) <- runStateT
         (runExceptT $ getFunction (Ident "main") >>= runFunction [])
         s
       case ret1 of
-        Left  err1 -> hPutStrLn stderr err1
-        Right _    -> return ()
+        Left (ErrorExcept err1) -> hPutStrLn stderr err1
+        _                       -> return ()
   return ()
 
 
@@ -44,7 +45,7 @@ transProgram x = case x of
 
 -- Main monad -----------------------------------------------------------------
 
-type IM = ExceptT String (StateT IState IO)
+type IM = ExceptT ExceptItem (StateT IState IO)
 
 -- runOnExcept :: ExceptT String (StateT IState IO) a -> IM a
 -- runOnExcept = id
@@ -56,16 +57,19 @@ runOnIO :: IO a -> IM a
 runOnIO = lift . lift
 
 
--- Errors ---------------------------------------------------------------------
+-- Except ---------------------------------------------------------------------
+
+data ExceptItem = ErrorExcept String | ReturnExcept Value | VoidReturnExcept | BreakExcept | ContinueExcept
+
 
 runtimeError :: String -> IM a
-runtimeError = throwError
+runtimeError = throwError . ErrorExcept
 
 
 -- State ----------------------------------------------------------------------
 
 data Value = IntV Integer | StrV String | BoolV Bool | VoidV ()
-  deriving (Eq, Ord, Show, Read)
+  deriving (Eq, Ord, Read)
 newtype Loc = Loc Integer deriving (Eq, Ord, Show, Read)
 data ValueType = IntT | StrT | BoolT | VoidT | NoneT
 
@@ -90,6 +94,12 @@ data IState = IState {
   usedLocs :: LocsSet,
   maxLoc :: Loc
 }
+
+instance Show Value where
+  show (IntV  n) = show n
+  show (StrV  s) = s
+  show (BoolV b) = show b
+  show _         = ""
 
 initialState :: IState
 initialState = IState { venv     = VEnv Map.empty
@@ -239,19 +249,29 @@ createFunction s id fType argDescriptions block =
       argTypes = map fst argDescriptions
 
       addParameters :: [(ArgT, Ident)] -> [FArg] -> IM ()
-      addParameters []                []        = return ()
-      addParameters ((type_, id) : _) (arg : _) = case (type_, arg) of
-        (ValT t, ValArg v) -> declareVariable id t >> assignValue id v
-        (RefT t, RefArg l) ->
-          modify (addVariableType id t . setVariableLoc id l)
+      addParameters [] []               = return ()
+      addParameters ((type_, id) : nextTypeDecriptions) (arg : nextArgs) = do
+        case (type_, arg) of
+          (ValT t, ValArg v) -> declareVariable id t >> assignValue id v
+          (RefT t, RefArg l) ->
+            modify (addVariableType id t . setVariableLoc id l)
+        addParameters nextTypeDecriptions nextArgs
       addParameters _ _ = runtimeError "Incorrect number of parameters"
 
       fAction :: [FArg] -> IM Value
-      fAction args = do
-        addParameters argDescriptions args
-        addFunction id $ createFunction s id fType argDescriptions block
-        transBlock block
-        return $ VoidV ()
+      fAction args =
+          do
+              currentState <- get
+              put $ currentState { venv = venv s, fenv = fenv s, tenv = tenv s }
+              addParameters argDescriptions args
+              addFunction id $ createFunction s id fType argDescriptions block
+              transBlock block
+              return $ VoidV ()
+            `catchError` (\err -> case err of
+                           ReturnExcept ret -> return ret
+                           VoidReturnExcept -> return $ VoidV ()
+                           _                -> throwError err
+                         )
   in  Func argTypes (runIsolated . fAction)
 
 getFunction :: Ident -> IM Func
@@ -263,6 +283,7 @@ getFunction id = do
 
 runFunction :: [FArg] -> Func -> IM Value
 runFunction args (Func argDescriptions f) = f args
+
 
 -- Blocks ---------------------------------------------------------------------
 
@@ -329,23 +350,50 @@ correctType type_ value = case (type_, value) of
 
 transStmt :: Show a => Stmt a -> IM ()
 transStmt x = case x of
-  Empty _                     -> failure x
-  BStmt _ block               -> failure x
-  Ass _ ident expr            -> failure x
-  Incr _ ident                -> failure x
-  Decr _ ident                -> failure x
-  Ret  _ expr                 -> failure x
-  VRet _                      -> failure x
-  Cond _ expr stmt            -> failure x
-  CondElse _ expr stmt1 stmt2 -> failure x
-  While _ expr stmt           -> failure x
-  SExp _ expr                 -> failure x
-  Break    _                  -> failure x
-  Continue _                  -> failure x
-  Print _ expr                -> do
+  Empty _          -> return ()
+  BStmt _ block    -> transBlock block
+  Ass _ ident expr -> transExpr expr >>= assignValue ident
+  Incr _ ident     -> do
+    val <- getValue ident
+    case val of
+      IntV n -> assignValue ident $ IntV (n + 1)
+      _      -> runtimeError "Incrementation on incorrect type"
+  Decr _ ident -> do
+    val <- getValue ident
+    case val of
+      IntV n -> assignValue ident $ IntV (n - 1)
+      _      -> runtimeError "Decrementation on incorrect type"
+  Ret _ expr       -> transExpr expr >>= throwError . ReturnExcept
+  VRet _           -> throwError VoidReturnExcept
+  Cond _ expr stmt -> do
+    b <- transExpr expr
+    case b of
+      BoolV True -> transStmt stmt
+      _          -> return ()
+  CondElse _ expr stmt1 stmt2 -> do
+    b <- transExpr expr
+    case b of
+      BoolV True -> transStmt stmt1
+      _          -> transStmt stmt2
+  w@(While _ expr stmt) -> do
+    b <- transExpr expr
+    case b of
+      BoolV True ->
+        do
+            transStmt stmt
+            transStmt w
+          `catchError` (\x -> case x of
+                         BreakExcept    -> return ()
+                         ContinueExcept -> transStmt w
+                         err            -> throwError err
+                       )
+      _ -> return ()
+  SExp _ expr  -> Control.Monad.void $ transExpr expr
+  Break    _   -> throwError BreakExcept
+  Continue _   -> throwError ContinueExcept
+  Print _ expr -> do
     val <- transExpr expr
-    runOnIO $ print val
-
+    runOnIO $ putStr $ show val
 
 
 -- Types ----------------------------------------------------------------------
@@ -371,9 +419,12 @@ transExpr x = case x of
   ELitInt _ integer  -> return $ IntV integer
   ELitTrue  _        -> return $ BoolV True
   ELitFalse _        -> return $ BoolV False
-  EApp _ ident exprs -> runtimeError "Expression not implemented"
-  EString _ string   -> return $ StrV string
-  Neg     _ expr     -> do
+  EApp _ ident exprs -> do
+    (Func types f) <- getFunction ident
+    args           <- getArgsFromExprs types exprs
+    f args
+  EString _ string -> return $ StrV string
+  Neg     _ expr   -> do
     former_val <- transExpr expr
     case former_val of
       IntV  n -> return $ IntV $ (-1) * n
@@ -410,6 +461,17 @@ transExpr x = case x of
       (BoolV b1, BoolV b2) -> return $ BoolV $ b1 || b2
       _ -> runtimeError "'||' operator used on unsuitable types"
 
+getArgsFromExprs :: Show a => [ArgT] -> [Expr a] -> IM [FArg]
+getArgsFromExprs []              []             = return []
+getArgsFromExprs (type_ : types) (expr : exprs) = do
+  nextArgs <- getArgsFromExprs types exprs
+  case (type_, expr) of
+    (ValT t, e) -> do
+      val <- transExpr e
+      return $ ValArg val : nextArgs
+    (RefT t, EVar _ id) -> do
+      l <- getLocation id
+      return $ RefArg l : nextArgs
 
 
 -- Operators ------------------------------------------------------------------
