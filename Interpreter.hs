@@ -16,10 +16,9 @@ import           ErrM
 
 -------------------------------------------------------------------------------
 
-type Result = IM ()
+-- TODO: runtime error on missing return
 
-failure :: Show a => a -> Result
-failure x = runtimeError ("Undefined case\n" ++ show x)
+type Result = IM ()
 
 interpret :: Show a => Program a -> IO ()
 interpret p = do
@@ -61,9 +60,18 @@ runOnIO = lift . lift
 
 data ExceptItem = ErrorExcept String | ReturnExcept Value | VoidReturnExcept | BreakExcept | ContinueExcept
 
+showPos :: Show a => a -> String
+showPos pos = case show pos of
+  ('J' : 'u' : 's' : 't' : ' ' : realPos) -> realPos
+  _ -> show pos
 
-runtimeError :: String -> IM a
-runtimeError = throwError . ErrorExcept
+runtimeError :: Show a => a -> String -> IM b
+runtimeError pos mes =
+  throwError $ ErrorExcept $ "RuntimeError on " ++ showPos pos ++ ": " ++ mes
+
+
+staticError :: IM a
+staticError = throwError $ ErrorExcept "StaticError"
 
 
 -- State ----------------------------------------------------------------------
@@ -155,12 +163,8 @@ isDefined id = do
 getType :: Ident -> IM ValueType
 getType id =
   let getTypeFromState :: IState -> ValueType
-      getTypeFromState = fromMaybe NoneT . runOnTenvMap (Map.lookup id) . tenv
-  in  do
-        retType <- gets getTypeFromState
-        case retType of
-          NoneT -> runtimeError ("Variable " ++ show id ++ " not declared.")
-          _     -> return retType
+      getTypeFromState = runOnTenvMap (Map.findWithDefault NoneT id) . tenv
+  in  gets getTypeFromState
 
 addVariableType :: Ident -> ValueType -> IState -> IState
 addVariableType id t s =
@@ -213,18 +217,14 @@ assignValue id val =
           where l = runOnVenvMap (Map.findWithDefault (Loc (-1)) id1) $ venv s
   in  modify (addValue id val)
 
-getValue :: Ident -> IM Value
-getValue id = do
-  dec <- isDeclared id
-  if dec
+getValue :: Show a => a -> Ident -> IM Value
+getValue pos id = do
+  def <- isDefined id
+  if def
     then do
-      def <- isDefined id
-      if def
-        then do
-          l <- getLocation id
-          gets $ runOnStoreMap (Map.findWithDefault (VoidV ()) l) . store
-        else runtimeError "Variable not defined"
-    else runtimeError "Variable not declared"
+      l <- getLocation id
+      gets $ runOnStoreMap (Map.findWithDefault (VoidV ()) l) . store
+    else runtimeError pos $ "Variable " ++ show id ++ " not defined"
 
 
 -- Functions ------------------------------------------------------------------
@@ -256,7 +256,7 @@ createFunction s id fType argDescriptions block =
           (RefT t, RefArg l) ->
             modify (addVariableType id t . setVariableLoc id l)
         addParameters nextTypeDecriptions nextArgs
-      addParameters _ _ = runtimeError "Incorrect number of parameters"
+      addParameters _ _ = staticError
 
       fAction :: [FArg] -> IM Value
       fAction args =
@@ -275,11 +275,10 @@ createFunction s id fType argDescriptions block =
   in  Func argTypes (runIsolated . fAction)
 
 getFunction :: Ident -> IM Func
-getFunction id = do
-  maybeF <- gets $ runOnFenvMap (Map.lookup id) . fenv
-  case maybeF of
-    Just f  -> return f
-    Nothing -> runtimeError "Function not defined"
+getFunction id =
+  gets
+    $ runOnFenvMap (Map.findWithDefault (Func [] (\_ -> return $ VoidV ())) id)
+    . fenv
 
 runFunction :: [FArg] -> Func -> IM Value
 runFunction args (Func argDescriptions f) = f args
@@ -322,21 +321,14 @@ transDecl x = case x of
     Init pos id expr -> do
       let t = transType type_
       val <- transExpr expr
-      if correctType t val
-        then do
-          declareVariable id t
-          assignValue id val
-        else runtimeError "Incorrect expression type"
+      declareVariable id t
+      assignValue id val
   VarDecl pos type_ (item : items) -> transDecl (VarDecl pos type_ [item])
     >> transDecl (VarDecl pos type_ items)
 
 transArg :: Show a => Arg a -> (ArgT, Ident)
 transArg x = case x of
   Arg _ argtype ident -> (transArgType argtype, ident)
-transItem :: Show a => Item a -> Result
-transItem x = case x of
-  NoInit _ ident    -> failure x
-  Init _ ident expr -> failure x
 
 correctType :: ValueType -> Value -> Bool
 correctType type_ value = case (type_, value) of
@@ -353,16 +345,16 @@ transStmt x = case x of
   Empty _          -> return ()
   BStmt _ block    -> transBlock block
   Ass _ ident expr -> transExpr expr >>= assignValue ident
-  Incr _ ident     -> do
-    val <- getValue ident
+  Incr pos ident   -> do
+    val <- getValue pos ident
     case val of
       IntV n -> assignValue ident $ IntV (n + 1)
-      _      -> runtimeError "Incrementation on incorrect type"
-  Decr _ ident -> do
-    val <- getValue ident
+      _      -> staticError
+  Decr pos ident -> do
+    val <- getValue pos ident
     case val of
       IntV n -> assignValue ident $ IntV (n - 1)
-      _      -> runtimeError "Decrementation on incorrect type"
+      _      -> staticError
   Ret _ expr       -> transExpr expr >>= throwError . ReturnExcept
   VRet _           -> throwError VoidReturnExcept
   Cond _ expr stmt -> do
@@ -415,11 +407,11 @@ transArgType x = case x of
 
 transExpr :: Show a => Expr a -> IM Value
 transExpr x = case x of
-  EVar    _ ident    -> getValue ident
-  ELitInt _ integer  -> return $ IntV integer
-  ELitTrue  _        -> return $ BoolV True
-  ELitFalse _        -> return $ BoolV False
-  EApp _ ident exprs -> do
+  EVar    pos ident   -> getValue pos ident
+  ELitInt _   integer -> return $ IntV integer
+  ELitTrue  _         -> return $ BoolV True
+  ELitFalse _         -> return $ BoolV False
+  EApp _ ident exprs  -> do
     (Func types f) <- getFunction ident
     args           <- getArgsFromExprs types exprs
     f args
@@ -427,15 +419,13 @@ transExpr x = case x of
   Neg     _ expr   -> do
     former_val <- transExpr expr
     case former_val of
-      IntV  n -> return $ IntV $ (-1) * n
-      BoolV _ -> runtimeError "'-' operator used on bool value"
-      StrV  _ -> runtimeError "'-' operator used on string"
+      IntV n -> return $ IntV $ (-1) * n
+      _      -> staticError
   Not _ expr -> do
     former_val <- transExpr expr
     case former_val of
-      IntV  _ -> runtimeError "'!' operator used on int value"
       BoolV b -> return $ BoolV $ not b
-      StrV  _ -> runtimeError "'!' operator used on string"
+      _       -> staticError
   EMul _ expr1 mulop expr2 -> do
     v1 <- transExpr expr1
     v2 <- transExpr expr2
@@ -453,13 +443,13 @@ transExpr x = case x of
     v2 <- transExpr expr2
     case (v1, v2) of
       (BoolV b1, BoolV b2) -> return $ BoolV $ b1 && b2
-      _ -> runtimeError "'&&' operator used on unsuitable types"
+      _                    -> staticError
   EOr _ expr1 expr2 -> do
     v1 <- transExpr expr1
     v2 <- transExpr expr2
     case (v1, v2) of
       (BoolV b1, BoolV b2) -> return $ BoolV $ b1 || b2
-      _ -> runtimeError "'||' operator used on unsuitable types"
+      _                    -> staticError
 
 getArgsFromExprs :: Show a => [ArgT] -> [Expr a] -> IM [FArg]
 getArgsFromExprs []              []             = return []
@@ -483,13 +473,13 @@ transAddOp x = case x of
         add v1 v2 = case (v1, v2) of
           (IntV n1, IntV n2) -> return $ IntV $ n1 + n2
           (StrV s1, StrV s2) -> return $ StrV $ s1 ++ s2
-          _ -> runtimeError "'+' operator used on unsuitable types"
+          _                  -> staticError
     in  add
   Minus _ ->
     let subtract :: Value -> Value -> IM Value
         subtract v1 v2 = case (v1, v2) of
           (IntV n1, IntV n2) -> return $ IntV $ n1 - n2
-          _ -> runtimeError "'-' operator used on unsuitable types"
+          _                  -> staticError
     in  subtract
 
 transMulOp :: Show a => MulOp a -> (Value -> Value -> IM Value)
@@ -498,23 +488,23 @@ transMulOp x = case x of
     let multiply :: Value -> Value -> IM Value
         multiply v1 v2 = case (v1, v2) of
           (IntV n1, IntV n2) -> return $ IntV $ n1 * n2
-          _ -> runtimeError "'*' operator used on unsuitable types"
+          _                  -> staticError
     in  multiply
-  Div _ ->
+  Div pos ->
     let divide :: Value -> Value -> IM Value
         divide v1 v2 = case (v1, v2) of
           (IntV n1, IntV n2) -> if n2 == 0
-            then runtimeError "Division by 0"
+            then runtimeError pos "Division by 0"
             else return $ IntV $ n1 `div` n2
-          _ -> runtimeError "'/' operator used on unsuitable types"
+          _ -> staticError
     in  divide
-  Mod _ ->
+  Mod pos ->
     let modulo :: Value -> Value -> IM Value
         modulo v1 v2 = case (v1, v2) of
           (IntV n1, IntV n2) -> if n2 == 0
-            then runtimeError "Modulo 0 operation"
+            then runtimeError pos "Modulo 0 operation"
             else return $ IntV $ n1 `mod` n2
-          _ -> runtimeError "'/' operator used on unsuitable types"
+          _ -> staticError
     in  modulo
 
 transRelOp :: Show a => RelOp a -> (Value -> Value -> IM Value)
@@ -523,25 +513,25 @@ transRelOp x = case x of
     let lth :: Value -> Value -> IM Value
         lth v1 v2 = case (v1, v2) of
           (IntV n1, IntV n2) -> return $ BoolV $ n1 < n2
-          _ -> runtimeError "'<' operator used on unsuitable types"
+          _                  -> staticError
     in  lth
   LE _ ->
     let le :: Value -> Value -> IM Value
         le v1 v2 = case (v1, v2) of
           (IntV n1, IntV n2) -> return $ BoolV $ n1 <= n2
-          _ -> runtimeError "'<=' operator used on unsuitable types"
+          _                  -> staticError
     in  le
   GTH _ ->
     let gth :: Value -> Value -> IM Value
         gth v1 v2 = case (v1, v2) of
           (IntV n1, IntV n2) -> return $ BoolV $ n1 > n2
-          _ -> runtimeError "'>' operator used on unsuitable types"
+          _                  -> staticError
     in  gth
   GE _ ->
     let ge :: Value -> Value -> IM Value
         ge v1 v2 = case (v1, v2) of
           (IntV n1, IntV n2) -> return $ BoolV $ n1 >= n2
-          _ -> runtimeError "'>=' operator used on unsuitable types"
+          _                  -> staticError
     in  ge
   EQU _ ->
     let equ :: Value -> Value -> IM Value

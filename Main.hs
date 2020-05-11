@@ -17,6 +17,7 @@ import           LexGrammar
 import           ParGrammar
 import           PrintGrammar
 import           AbsGrammar
+import           StaticCheck
 import           Interpreter
 
 
@@ -32,7 +33,7 @@ putStrV :: Verbosity -> String -> IO ()
 putStrV v s = when (v > 1) $ putStrLn s
 
 runFile :: Show a => Verbosity -> ParseFun (Program a) -> FilePath -> IO ()
-runFile v p f = putStrLn f >> readFile f >>= run v p
+runFile v p f = readFile f >>= run v p
 
 run :: Show a => Verbosity -> ParseFun (Program a) -> String -> IO ()
 run v p s =
@@ -45,10 +46,9 @@ run v p s =
           putStrLn s
           exitFailure
         Ok tree -> do
+          check tree
           interpret tree
-
           exitSuccess
-
 
 showTree :: (Show a, Print a) => Int -> a -> IO ()
 showTree v tree = do
