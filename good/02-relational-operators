@@ -1,0 +1,53 @@
+int main() {
+    int x = 5;
+    bool b = true;
+    string s = "hello";
+
+    print(x > 5);
+    print("\n");
+    
+    print(x >= 5);
+    print("\n");
+    
+    print(x < 7);
+    print("\n");
+    
+    print(x <= 2);
+    print("\n");
+    
+    print(x == 6);
+    print("\n");
+    
+    print(x != 6);
+    print("\n");
+    print("\n");
+    
+    print(b == true);
+    print("\n");
+    
+    print(b != true);
+    print("\n");
+    print("\n");
+    
+    print(s == "hello");
+    print("\n");
+    
+    print(s == "asdf");
+    print("\n");
+    
+    print(s != "hello");
+    print("\n");
+    print("\n");
+    
+
+// Comparing values of different types is correct,
+// but `==` will always return `false` and `!=` will always return `true`
+
+    print(x == s);
+    print("\n");
+    
+    print(x != s);
+    print("\n");
+    
+    return 0;
+}
