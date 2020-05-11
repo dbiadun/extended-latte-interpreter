@@ -111,7 +111,7 @@ data IState = IState {
 instance Show Value where
   show (IntV  n) = show n
   show (StrV  s) = s
-  show (BoolV b) = show b
+  show (BoolV b) = if b then "true" else "false"
   show _         = ""
 
 initialState :: IState
