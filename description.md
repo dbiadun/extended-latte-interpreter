@@ -148,6 +148,11 @@ comment    "//" ;
 comment    "/*" "*/" ;
 ```
 
+## Conflicts
+
+The grammar has at least one conflict. `Print` instruction may be written same as user's function named `print`.
+Parser reads that as `Print` instruction, so user can't define and use function named `print`.
+
 # Examples
 
 ## Hello World
