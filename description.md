@@ -63,7 +63,7 @@ Break.      Stmt ::= "break" ";" ;
 
 Continue.   Stmt ::= "continue" ";" ;
 
-Print.      Stmt ::= "print" "(" Expr ")" ;
+Print.      Stmt ::= "print" "(" Expr ")" ";" ;
 
 -- Types ---------------------------------------------------
 
