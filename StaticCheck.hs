@@ -305,9 +305,10 @@ checkExpr x = case x of
   Not pos expr -> do
     exprT <- checkExpr expr
     unless (exprT == BoolT)
-      $ staticCheckError pos "Trying to use '!' operator on non-integer value"
+      $ staticCheckError pos "Trying to use '!' operator on non-bool value"
     return BoolT
-  EMul pos expr1 mulop expr2 -> do
+  EMul _ expr1 mulop expr2 -> do
+    let pos = getMulOpPos mulop
     t1 <- checkExpr expr1
     unless (t1 == IntT)
       $  staticCheckError pos
@@ -353,7 +354,8 @@ checkExpr x = case x of
         ++ getAddOp addop
         ++ "' operator is not an integer value"
       return IntT
-  ERel pos expr1 relop expr2 -> do
+  ERel _ expr1 relop expr2 -> do
+    let pos = getRelOpPos relop
     t1 <- checkExpr expr1
     t2 <- checkExpr expr2
     case relop of
@@ -449,3 +451,20 @@ getRelOp x = case x of
   GE  _ -> ">="
   EQU _ -> "=="
   NE  _ -> "!="
+
+getMulOpPos :: Show a => MulOp a -> a
+getMulOpPos x = case x of
+  Times pos -> pos
+  Div   pos -> pos
+  Mod   pos -> pos
+
+getRelOpPos :: Show a => RelOp a -> a
+getRelOpPos x = case x of
+  LTH pos -> pos
+  LE  pos -> pos
+  GTH pos -> pos
+  GE  pos -> pos
+  EQU pos -> pos
+  NE  pos -> pos
+
+
