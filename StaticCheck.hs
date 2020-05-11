@@ -50,7 +50,7 @@ showPos pos = case show pos of
 
 staticCheckError :: Show a => a -> String -> SCM b
 staticCheckError pos mes =
-  throwError $ "StaticError on " ++ showPos pos ++ ": " ++ mes
+  throwError $ "StaticError at " ++ showPos pos ++ ": " ++ mes
 
 
 -- State ----------------------------------------------------------------------

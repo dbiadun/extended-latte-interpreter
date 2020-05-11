@@ -40,9 +40,6 @@ run v p s =
   let ts = myLLexer s
   in  case p ts of
         Bad s -> do
-          putStrLn "\nParse              Failed...\n"
-          putStrV v "Tokens:"
-          putStrV v $ show ts
           putStrLn s
           exitFailure
         Ok tree -> do

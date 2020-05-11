@@ -67,7 +67,7 @@ showPos pos = case show pos of
 
 runtimeError :: Show a => a -> String -> IM b
 runtimeError pos mes =
-  throwError $ ErrorExcept $ "RuntimeError on " ++ showPos pos ++ ": " ++ mes
+  throwError $ ErrorExcept $ "RuntimeError at " ++ showPos pos ++ ": " ++ mes
 
 
 staticError :: IM a
