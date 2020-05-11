@@ -32,8 +32,10 @@ check p = do
 -- Program --------------------------------------------------------------------
 
 checkProgram :: Show a => Program a -> SCM ()
-checkProgram x = case x of
-  Program _ decls -> checkAllDecls decls
+checkProgram (Program _ decls) = do
+  checkAllDecls decls
+  getFunction (Just (0, 0)) (Ident "main")
+  return ()
 
 
 -- Main monad -----------------------------------------------------------------
