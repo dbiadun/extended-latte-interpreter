@@ -1,5 +1,5 @@
 all:
-	ghc -i./Parser/ --make Main.hs -o Interpreter
+	ghc -i./Parser/ --make Main.hs -o interpreter
 
 clean:
 	-rm -f *.log *.aux *.hi *.o *.dvi
