@@ -1,6 +1,6 @@
 # Extended Latte Interpreter
 
-This program is an interpreter of extended Latte programming language described in description.md.
+This program is an interpreter of extended Latte programming language described in `description.md`.
 
 ## Files
 
@@ -15,6 +15,6 @@ This program is an interpreter of extended Latte programming language described 
 
 ## Compilation and running
 
-To compile interpreter simply use `make`.
+To compile interpreter simply use `make`. You will need `ghc` to do that.
 
 To run any program in our language - `./interpreter program`.
